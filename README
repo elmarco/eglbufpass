@@ -1,0 +1,21 @@
+experiment with EGL dri images and unix socket fd passing with dirty
+
+server process -
+
+listen to UNIX socket,
+
+init EGL
+
+create multiple resources - 2-3 textures
+
+create buffers from the EGL resources
+
+convert to file descriptors -
+
+client process - initially one process
+
+create an EGL context,
+
+import fds into images,
+
+read from unix socket for flushes and updates, update screen
