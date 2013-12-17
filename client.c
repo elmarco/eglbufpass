@@ -15,6 +15,34 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+
+const char *vertex_src =
+	"attribute vec4        position;		 \
+   attribute vec2        texcoords;		 \
+   varying vec2          tcoords;		 \
+           					 \
+   void main()					 \
+   {						 \
+      tcoords = texcoords;				 \
+      gl_Position = position;            \
+   }							 \
+";
+
+
+const char *fragment_src =
+	"                                                      \
+   varying highp vec2    tcoords;					       \
+   uniform sampler2D samp;				       \
+          						       \
+   void  main()						       \
+   {							       \
+      gl_FragColor  = texture2D(samp, tcoords);		       \
+   }							       \
+";
+
 struct x11_window {
 	Window win;
 	EGLSurface egl_surface;
@@ -41,6 +69,9 @@ struct client {
 	struct window *w;
 	int sock_fd;
 	EGLImageKHR image;
+	GLuint tex_id;
+	GLuint tex_loc;
+	GLuint attr_pos, attr_tex;
 };
 
 static void x11_window_create(struct window *w)
@@ -111,7 +142,7 @@ static void x11_display_init(struct display *d)
 {
 	static const EGLint conf_att[] = {
 		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-		EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 		EGL_RED_SIZE, 1,
 		EGL_GREEN_SIZE, 1,
 		EGL_BLUE_SIZE, 1,
@@ -143,7 +174,7 @@ static void x11_display_init(struct display *d)
 	fprintf(stderr, "EGL extensions: %s\n",
 		eglQueryString(d->x11.egl_display, EGL_EXTENSIONS));
 
-	api = EGL_OPENGL_API;
+	api = EGL_OPENGL_ES_API;
 	b = eglBindAPI(api);
 	if (!b)
 		error(1, errno, "cannot bind OpenGLES API");
@@ -183,6 +214,131 @@ static void display_destroy(struct display *d)
 	free(d);
 }
 
+static void
+draw_rect_from_arrays(struct client *c, const void *verts, const void *tex)
+{
+	GLuint buf = 0;
+
+	glGenBuffers(1, &buf);
+	glBindBuffer(GL_ARRAY_BUFFER, buf);
+	glBufferData(GL_ARRAY_BUFFER,
+		     (sizeof(GLfloat) * 4 * 4) +
+		     (sizeof(GLfloat) * 4 * 2),
+		     NULL,
+		     GL_STATIC_DRAW);
+
+	if (verts) {
+		glBufferSubData(GL_ARRAY_BUFFER,
+				0,
+				sizeof(GLfloat) * 4 * 4,
+				verts);
+		glVertexAttribPointer(c->attr_pos, 4, GL_FLOAT,
+				      GL_FALSE, 0, 0);
+		glEnableVertexAttribArray(c->attr_pos);
+	}
+	if (tex) {
+		glBufferSubData(GL_ARRAY_BUFFER,
+				sizeof(GLfloat) * 4 * 4,
+				sizeof(GLfloat) * 4 * 2,
+				tex);
+		glVertexAttribPointer(c->attr_tex, 2, GL_FLOAT,
+				      GL_FALSE, 0,
+				      (void *)(sizeof(GLfloat) * 4 * 4));
+		glEnableVertexAttribArray(c->attr_tex);
+	}
+			
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	if (verts)
+		glDisableVertexAttribArray(c->attr_pos);
+	if (tex)
+		glDisableVertexAttribArray(c->attr_tex);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glDeleteBuffers(1, &buf);
+}
+
+static GLvoid
+client_draw_rect_tex(struct client *c,
+		     float x, float y, float w, float h,
+                     float tx, float ty, float tw, float th)
+{
+        float verts[4][4];
+        float tex[4][2];
+
+        verts[0][0] = x;
+        verts[0][1] = y;
+        verts[0][2] = 0.0;
+        verts[0][3] = 1.0;
+        tex[0][0] = tx;
+        tex[0][1] = ty;
+        verts[1][0] = x + w;
+        verts[1][1] = y;
+        verts[1][2] = 0.0;
+        verts[1][3] = 1.0;
+        tex[1][0] = tx + tw;
+        tex[1][1] = ty;
+        verts[2][0] = x;
+        verts[2][1] = y + h;
+        verts[2][2] = 0.0;
+        verts[2][3] = 1.0;
+        tex[2][0] = tx;
+        tex[2][1] = ty + th;
+        verts[3][0] = x + w;
+        verts[3][1] = y + h;
+        verts[3][2] = 0.0;
+        verts[3][3] = 1.0;
+        tex[3][0] = tx + tw;
+        tex[3][1] = ty + th;
+
+        draw_rect_from_arrays(c, verts, tex);
+}
+
+static void draw_screen(struct client *c)
+{
+	client_draw_rect_tex(c, -1, -1, 2, 2,
+			     0, 0, 1, 1);
+}
+
+static void init_shaders(struct client *c)
+{
+	GLuint fs, vs, prog;
+	GLint stat;
+
+	fs = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(fs, 1, (const char **)&fragment_src, NULL);
+	glCompileShader(fs);
+	glGetShaderiv(fs, GL_COMPILE_STATUS, &stat);
+	if (!stat)
+		error(1, errno, "Failed to compile FS");
+
+	vs = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vs, 1, (const char **)&vertex_src, NULL);
+	glCompileShader(vs);
+	glGetShaderiv(vs, GL_COMPILE_STATUS, &stat);
+	if (!stat)
+		error(1, errno, "failed to compile VS");
+
+	prog = glCreateProgram();
+	glAttachShader(prog, fs);
+	glAttachShader(prog, vs);
+	glLinkProgram(prog);
+
+	glGetProgramiv(prog, GL_LINK_STATUS, &stat);
+	if (!stat) {
+		char log[1000];
+		GLsizei len;
+		glGetProgramInfoLog(prog, 1000, &len, log);
+		printf("Error linking: %s\n", log);
+		exit(1);
+	}
+
+	glUseProgram(prog);
+
+	c->attr_pos = glGetAttribLocation(prog, "position");
+	c->attr_tex = glGetAttribLocation(prog, "texcoords");
+	c->tex_loc = glGetUniformLocation(prog, "samp");
+}
+
 struct client *client_create(int sock_fd)
 {
 	struct client *client;
@@ -195,6 +351,7 @@ struct client *client_create(int sock_fd)
 	client->w = window_create(client->d);
 	client->sock_fd = sock_fd;
 
+	init_shaders(client);
 	sleep(1);
 	for (;;) {
 		EGLint attrs[13];
@@ -228,7 +385,38 @@ struct client *client_create(int sock_fd)
 		if (!client->image)
 			error(1, errno, "failed to import image dma-buf");
 
-						  
+		fprintf(stderr,"client->image is %p\n", client->image);
+	
+		glViewport(0, 0, client->w->width, client->w->height);
+		glClearColor(0.0, 1.0, 0.0, 0.0);
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
+		sleep(1);
+		glClearColor(0.0, 0.0, 1.0, 0.0);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glGenTextures(1, &client->tex_id);
+		glBindTexture(GL_TEXTURE_2D, client->tex_id);
+		glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+		glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+		glUniform1i(client->tex_loc, 0);
+		if (1) {
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
+				     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)client->image);
+		}
+		else {
+			int i;
+			static char pix[640*480*4];
+			for (i = 0; i < 640*480; i++) {
+				*((unsigned int *)&pix[i * 4]) = 0x00ffff00;
+			}
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
+				     GL_RGBA, GL_UNSIGNED_BYTE, pix);
+		}
+
+		draw_screen(client);
+		eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
 	}
 	return client;
 }
