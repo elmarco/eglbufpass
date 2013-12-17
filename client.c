@@ -1,3 +1,6 @@
+#define EGL_EGLEXT_PROTOTYPES
+#define GL_GLEXT_PROTOTYPES
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -7,10 +10,11 @@
 #include <errno.h>
 #include <error.h>
 #include <X11/Xlib.h>
+#include "fdpass.h"
 #include "common.h"
 
 #include <EGL/egl.h>
-
+#include <EGL/eglext.h>
 struct x11_window {
 	Window win;
 	EGLSurface egl_surface;
@@ -36,6 +40,7 @@ struct client {
 	struct display *d;
 	struct window *w;
 	int sock_fd;
+	EGLImageKHR image;
 };
 
 static void x11_window_create(struct window *w)
@@ -181,6 +186,7 @@ static void display_destroy(struct display *d)
 struct client *client_create(int sock_fd)
 {
 	struct client *client;
+	ssize_t size;
 	client = calloc(1, sizeof(struct client));
 	if (!client)
 		error(1, errno, "cannot allocate memory");
@@ -188,6 +194,42 @@ struct client *client_create(int sock_fd)
 	client->d = display_create();
 	client->w = window_create(client->d);
 	client->sock_fd = sock_fd;
+
+	sleep(1);
+	for (;;) {
+		EGLint attrs[13];
+		struct bufinfo buf;
+		int myfd;
+		size = sock_fd_read(client->sock_fd, &buf, sizeof(buf), &myfd);
+		if (size <= 0)
+			break;
+
+		printf("read %d: %d %d %dx%d\n", (int)size, buf.id, buf.stride, buf.width, buf.height);
+
+		attrs[0] = EGL_DMA_BUF_PLANE0_FD_EXT;
+		attrs[1] = myfd;
+		attrs[2] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+		attrs[3] = buf.stride;
+		attrs[4] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+		attrs[5] = 0;
+		attrs[6] = EGL_WIDTH;
+		attrs[7] = buf.width;
+		attrs[8] = EGL_HEIGHT;
+		attrs[9] = buf.height;
+		attrs[10] = EGL_LINUX_DRM_FOURCC_EXT;
+		attrs[11] = buf.format;
+		attrs[12] = EGL_NONE;
+		client->image = eglCreateImageKHR(client->d->x11.egl_display,
+						  EGL_NO_CONTEXT,
+						  EGL_LINUX_DMA_BUF_EXT,
+						  (EGLClientBuffer)NULL,
+						  attrs);
+
+		if (!client->image)
+			error(1, errno, "failed to import image dma-buf");
+
+						  
+	}
 	return client;
 }
 

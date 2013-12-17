@@ -1,3 +1,7 @@
+
+/* requires
+   EGL_KHR_surfaceless_context
+*/
 #define EGL_EGLEXT_PROTOTYPES
 #define GL_GLEXT_PROTOTYPES
 #define _GNU_SOURCE
@@ -17,7 +21,9 @@
 #include <error.h>
 #include <gbm.h>
 #include <xf86drm.h>
+#include "fdpass.h"
 #include "common.h"
+#include <drm/drm_fourcc.h>
 PFNGLGENTEXTURESEXTPROC my_glGenTextures;
 PFNGLGENFRAMEBUFFERSPROC my_glGenFramebuffers;
 GLuint tex_ids[4];
@@ -30,27 +36,17 @@ struct rnode_display {
 	EGLContext egl_ctx;
 };
 
-struct rnode_window {
-	struct gbm_surface *gbm_surface;
-	EGLSurface egl_surface;
-};
-
-struct window {
-	struct display *display;
-	int width, height;
-	struct rnode_window rnode;
-};
-
 struct display {
 	struct rnode_display rnode;
 };
 
 struct server {
 	struct display *d;
-	struct window *w;
 	GLuint tex_id;
 	GLuint fb_id;
 	EGLImageKHR image;
+	int stride;
+	int width, height;
 	int sock_fd;
 };
 
@@ -152,8 +148,9 @@ static void rnode_init(struct display *d)
 	if (!d->rnode.egl_ctx)
 		error(1, errno, "cannot create EGL context");
 
+
 	eglMakeCurrent(d->rnode.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
-		       EGL_NO_CONTEXT);
+		       d->rnode.egl_ctx);
 }
 
 static void rnode_destroy(struct display *d)
@@ -182,80 +179,26 @@ static void display_destroy(struct display *display)
 	free(display);
 }
 
-static void rnode_window_create(struct window *w)
-{
-	struct display *d = w->display;
-	EGLBoolean b;
-
-	w->rnode.gbm_surface = gbm_surface_create(d->rnode.gbm_dev,
-						  w->width, w->height,
-						  GBM_FORMAT_XRGB8888,
-						  GBM_BO_USE_RENDERING);
-	if (!w->rnode.gbm_surface)
-		error(1, errno, "cannot create gbm surface");
-
-	w->rnode.egl_surface = eglCreateWindowSurface(d->rnode.egl_display,
-						      d->rnode.egl_conf,
-						      (EGLNativeWindowType)w->rnode.gbm_surface, NULL);
-	if (!w->rnode.egl_surface)
-		error(1, errno, "Cannot create EGL surface");
-
-	b = eglMakeCurrent(d->rnode.egl_display,
-			   w->rnode.egl_surface,
-			   w->rnode.egl_surface,
-			   d->rnode.egl_ctx);
-	if (!b)
-		error(1, errno, "Cannot activate EGL context");
-}
-
-static void rnode_window_destroy(struct window *w)
-{
-	struct display *d = w->display;
-
-	eglMakeCurrent(d->rnode.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
-		       EGL_NO_CONTEXT);
-	eglDestroySurface(d->rnode.egl_display, w->rnode.egl_surface);
-	gbm_surface_destroy(w->rnode.gbm_surface);
-}
-
-static struct window *window_create(struct display *display)
-{
-	struct window *window = calloc(1, sizeof(*window));
-	if (!window)
-		error(1, errno, "cannot allocate window");
-
-	window->display = display;
-	window->width = 100;
-	window->height = 100;
-
-	rnode_window_create(window);
-	return window;
-}
-
-static void window_destroy(struct window *window)
-{
-	rnode_window_destroy(window);
-	free(window);
-}
-
 static void init_fns(void)
 {
 	my_glGenTextures = (void *)eglGetProcAddress("glGenTextures");
 	my_glGenFramebuffers = (void *)eglGetProcAddress("glGenFramebuffers");
 }
 
-static void server_init_texture(struct server *server)
+static int server_init_texture(struct server *server)
 {
 	EGLBoolean b;
 	EGLint name, handle, stride;
 	int r;
 	int fd;
 
+	server->width = 640;
+	server->height = 480;
 	/* create some textures */
 	(*my_glGenTextures)(1, &server->tex_id);
 
 	glBindTexture(GL_TEXTURE_2D, server->tex_id);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, server->width, server->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
 	(*my_glGenFramebuffers)(1, &server->fb_id);
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, server->fb_id);
@@ -272,17 +215,17 @@ static void server_init_texture(struct server *server)
 	b = eglExportDRMImageMESA(server->d->rnode.egl_display,
 				  server->image,
 				  &name, &handle,
-				  &stride);
+				  &server->stride);
 
 	if (!b)
 		error(1, errno, "failed to export image\n");
 
-	fprintf(stderr,"image exported %d %d %d\n", name, handle, stride);
+	fprintf(stderr,"image exported %d %d %d\n", name, handle, server->stride);
 
 	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, 0, &fd);
 	if (r < 0)
 		error(1, errno, "cannot get prime-fd for handle");
-
+	return fd;
 }
 
 static void server_fini_texture(struct server *server)
@@ -294,17 +237,29 @@ static void server_fini_texture(struct server *server)
 struct server *server_create(int sock_fd)
 {
 	struct server *server;
-
+	int fd;
 	server = calloc(1, sizeof(struct server));
 	if (!server)
 		error(1, errno, "cannot allocate memory");
 	server->d = display_create();
-	server->w = window_create(server->d);
 	server->sock_fd = sock_fd;
 	init_fns();
 
-	server_init_texture(server);
+	fd = server_init_texture(server);
 
+	{
+		ssize_t size;
+		int i;
+		struct bufinfo buf;
+
+		buf.id = server->tex_id;
+		buf.stride = server->stride;
+		buf.width = server->width;
+		buf.height = server->height;
+		buf.format = DRM_FORMAT_XRGB8888;
+		size = sock_fd_write(server->sock_fd, &buf, sizeof(buf), fd);
+	}
+	sleep(10);
 	return server;
 }
 
@@ -312,7 +267,6 @@ struct server *server_create(int sock_fd)
 void server_destroy(struct server *server)
 {
 	server_fini_texture(server);
-	window_destroy(server->w);
 	display_destroy(server->d);
 	close(server->sock_fd);
 	free(server);

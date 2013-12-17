@@ -1,7 +1,7 @@
 CFLAGS=-g -Wall `pkg-config --cflags libdrm`
 LIBS=-lEGL -lGL -lgbm -lGLEW -ldrm -lX11
 
-OBJ = server_egl.o main.o client.o
+OBJ = server_egl.o main.o client.o fdpass.o
 
 all: egl_pass
 
