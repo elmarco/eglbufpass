@@ -207,6 +207,7 @@ static int server_init_texture(struct server *server)
 	glClearColor(1.0, 0.0, 0.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT);
 
+	glFinish();
 	/* create an EGL image from that texture */
 	server->image = eglCreateImageKHR(server->d->rnode.egl_display, server->d->rnode.egl_ctx, EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer)(unsigned long)server->tex_id, NULL);
 
@@ -222,7 +223,7 @@ static int server_init_texture(struct server *server)
 
 	fprintf(stderr,"image exported %d %d %d\n", name, handle, server->stride);
 
-	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, 0, &fd);
+	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, DRM_CLOEXEC, &fd);
 	if (r < 0)
 		error(1, errno, "cannot get prime-fd for handle");
 	return fd;
@@ -244,21 +245,45 @@ struct server *server_create(int sock_fd)
 	server->d = display_create();
 	server->sock_fd = sock_fd;
 	init_fns();
-
+	
 	fd = server_init_texture(server);
 
 	{
 		ssize_t size;
 		int i;
-		struct bufinfo buf;
+		struct cmd_buf buf;
+		
+		buf.type = CMD_TYPE_BUF;
 
-		buf.id = server->tex_id;
-		buf.stride = server->stride;
-		buf.width = server->width;
-		buf.height = server->height;
-		buf.format = DRM_FORMAT_XRGB8888;
+		buf.u.buf.id = server->tex_id;
+		buf.u.buf.stride = server->stride;
+		buf.u.buf.width = server->width;
+		buf.u.buf.height = server->height;
+		buf.u.buf.format = DRM_FORMAT_XRGB8888;
 		size = sock_fd_write(server->sock_fd, &buf, sizeof(buf), fd);
+
+		buf.type = CMD_TYPE_DIRT;
+		buf.u.dirty.id = server->tex_id;
+		buf.u.dirty.x = 0;
+		buf.u.dirty.y = 0;
+		buf.u.dirty.width = server->width;
+		buf.u.dirty.height = server->height;
+		size = sock_fd_write(server->sock_fd, &buf, sizeof(buf), -1);
+
+		sleep(2);
+		glClearColor(0.0, 0.0, 1.0, 0.0);
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		glFinish();
+		buf.type = CMD_TYPE_DIRT;
+		buf.u.dirty.id = server->tex_id;
+		buf.u.dirty.x = 0;
+		buf.u.dirty.y = 0;
+		buf.u.dirty.width = server->width;
+		buf.u.dirty.height = server->height;
+		size = sock_fd_write(server->sock_fd, &buf, sizeof(buf), -1);
 	}
+
 	sleep(10);
 	return server;
 }

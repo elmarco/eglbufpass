@@ -63,7 +63,14 @@ struct x11_display {
 struct display {
 	struct x11_display x11;
 };
-  
+
+struct texture {
+	int rem_id;
+	GLuint local_id;
+	EGLImageKHR image;
+	struct texture *next;
+};
+
 struct client {
 	struct display *d;
 	struct window *w;
@@ -72,6 +79,7 @@ struct client {
 	GLuint tex_id;
 	GLuint tex_loc;
 	GLuint attr_pos, attr_tex;
+	struct texture *texhead;
 };
 
 static void x11_window_create(struct window *w)
@@ -106,6 +114,12 @@ static void x11_window_create(struct window *w)
 	if (!b)
 		error(1, errno, "Cannot activate EGL context");
 }
+
+static void init_fns(void)
+{
+	
+}
+
 static struct window *window_create(struct display *d)
 {
 
@@ -339,6 +353,58 @@ static void init_shaders(struct client *c)
 	c->tex_loc = glGetUniformLocation(prog, "samp");
 }
 
+void add_texture(struct client *client, struct cmd_buf *cbuf, int fd)
+{
+	struct texture *texture;
+	EGLint attrs[13];
+
+	texture = calloc(1, sizeof(*texture));
+	if (!texture)
+		error(1, errno, "failed to create texture storage\n");
+	
+	texture->rem_id = cbuf->u.buf.id;
+			
+	attrs[0] = EGL_DMA_BUF_PLANE0_FD_EXT;
+	attrs[1] = fd;
+	attrs[2] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+	attrs[3] = cbuf->u.buf.stride;
+	attrs[4] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+	attrs[5] = 0;
+	attrs[6] = EGL_WIDTH;
+	attrs[7] = cbuf->u.buf.width;
+	attrs[8] = EGL_HEIGHT;
+	attrs[9] = cbuf->u.buf.height;
+	attrs[10] = EGL_LINUX_DRM_FOURCC_EXT;
+	attrs[11] = cbuf->u.buf.format;
+	attrs[12] = EGL_NONE;
+	texture->image = eglCreateImageKHR(client->d->x11.egl_display,
+					  EGL_NO_CONTEXT,
+					  EGL_LINUX_DMA_BUF_EXT,
+					  (EGLClientBuffer)NULL,
+					  attrs);
+
+	if (!texture->image)
+		error(1, errno, "failed to import image dma-buf");
+
+	glGenTextures(1, &texture->local_id);
+	glBindTexture(GL_TEXTURE_2D, texture->local_id);
+	glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+	glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+
+//	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
+//		     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)texture->image);
+
+	if (!client->texhead)
+		client->texhead = texture;
+	else {
+		struct texture *iter = client->texhead;
+		while (iter->next)
+			iter = iter->next;
+		iter->next = texture;
+	}
+}
+
 struct client *client_create(int sock_fd)
 {
 	struct client *client;
@@ -352,71 +418,32 @@ struct client *client_create(int sock_fd)
 	client->sock_fd = sock_fd;
 
 	init_shaders(client);
+
+	glViewport(0, 0, client->w->width, client->w->height);
+	glClearColor(0.0, 1.0, 0.0, 0.0);
+	glClear(GL_COLOR_BUFFER_BIT);
+	
+	eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
+
+	glUniform1i(client->tex_loc, 0);
 	sleep(1);
 	for (;;) {
-		EGLint attrs[13];
-		struct bufinfo buf;
+
+		struct cmd_buf buf;
 		int myfd;
 		size = sock_fd_read(client->sock_fd, &buf, sizeof(buf), &myfd);
 		if (size <= 0)
 			break;
 
-		printf("read %d: %d %d %dx%d\n", (int)size, buf.id, buf.stride, buf.width, buf.height);
+		if (buf.type == CMD_TYPE_BUF) {
+			add_texture(client, &buf, myfd);
+		} else if (buf.type == CMD_TYPE_DIRT) {
+			draw_screen(client);
 
-		attrs[0] = EGL_DMA_BUF_PLANE0_FD_EXT;
-		attrs[1] = myfd;
-		attrs[2] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
-		attrs[3] = buf.stride;
-		attrs[4] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
-		attrs[5] = 0;
-		attrs[6] = EGL_WIDTH;
-		attrs[7] = buf.width;
-		attrs[8] = EGL_HEIGHT;
-		attrs[9] = buf.height;
-		attrs[10] = EGL_LINUX_DRM_FOURCC_EXT;
-		attrs[11] = buf.format;
-		attrs[12] = EGL_NONE;
-		client->image = eglCreateImageKHR(client->d->x11.egl_display,
-						  EGL_NO_CONTEXT,
-						  EGL_LINUX_DMA_BUF_EXT,
-						  (EGLClientBuffer)NULL,
-						  attrs);
-
-		if (!client->image)
-			error(1, errno, "failed to import image dma-buf");
-
-		fprintf(stderr,"client->image is %p\n", client->image);
-	
-		glViewport(0, 0, client->w->width, client->w->height);
-		glClearColor(0.0, 1.0, 0.0, 0.0);
-		glClear(GL_COLOR_BUFFER_BIT);
-
-		eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
-		sleep(1);
-		glClearColor(0.0, 0.0, 1.0, 0.0);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glGenTextures(1, &client->tex_id);
-		glBindTexture(GL_TEXTURE_2D, client->tex_id);
-		glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-		glTexParameteri ( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-		glUniform1i(client->tex_loc, 0);
-		if (1) {
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
-				     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-			glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)client->image);
-		}
-		else {
-			int i;
-			static char pix[640*480*4];
-			for (i = 0; i < 640*480; i++) {
-				*((unsigned int *)&pix[i * 4]) = 0x00ffff00;
-			}
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
-				     GL_RGBA, GL_UNSIGNED_BYTE, pix);
+			eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
 		}
 
-		draw_screen(client);
-		eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
+
 	}
 	return client;
 }
