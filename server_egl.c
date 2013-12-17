@@ -16,7 +16,8 @@
 #include <errno.h>
 #include <error.h>
 #include <gbm.h>
-
+#include <xf86drm.h>
+#include "common.h"
 PFNGLGENTEXTURESEXTPROC my_glGenTextures;
 PFNGLGENFRAMEBUFFERSPROC my_glGenFramebuffers;
 GLuint tex_ids[4];
@@ -42,6 +43,15 @@ struct window {
 
 struct display {
 	struct rnode_display rnode;
+};
+
+struct server {
+	struct display *d;
+	struct window *w;
+	GLuint tex_id;
+	GLuint fb_id;
+	EGLImageKHR image;
+	int sock_fd;
 };
 
 static int rnode_open(void)
@@ -234,37 +244,76 @@ static void init_fns(void)
 	my_glGenFramebuffers = (void *)eglGetProcAddress("glGenFramebuffers");
 }
 
-int main(void)
+static void server_init_texture(struct server *server)
 {
-	EGLImageKHR image;
-	struct display *display;
-	struct window *window;
-
-	display = display_create();
-	window = window_create(display);
-	init_fns();
+	EGLBoolean b;
+	EGLint name, handle, stride;
+	int r;
+	int fd;
 
 	/* create some textures */
-	(*my_glGenTextures)(4, &tex_ids[0]);
+	(*my_glGenTextures)(1, &server->tex_id);
 
-	glBindTexture(GL_TEXTURE_2D, tex_ids[0]);
+	glBindTexture(GL_TEXTURE_2D, server->tex_id);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
-	(*my_glGenFramebuffers)(1, &fb_id);
-	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, tex_ids[0], 0);
-
-	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fb_id);
+	(*my_glGenFramebuffers)(1, &server->fb_id);
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, server->fb_id);
+	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, server->tex_id, 0);
 
 	glClearColor(1.0, 0.0, 0.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT);
-	
+
 	/* create an EGL image from that texture */
-	image = eglCreateImageKHR(display->rnode.egl_display, display->rnode.egl_ctx, EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer)(unsigned long)tex_ids[0], NULL);
+	server->image = eglCreateImageKHR(server->d->rnode.egl_display, server->d->rnode.egl_ctx, EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer)(unsigned long)server->tex_id, NULL);
 
-	fprintf(stderr,"got image %p\n", image);
-	eglDestroyImageKHR(display->rnode.egl_display, image);
+	fprintf(stderr,"got image %p\n", server->image);
 
-	window_destroy(window);
-	display_destroy(display);
-	return 0;
+	b = eglExportDRMImageMESA(server->d->rnode.egl_display,
+				  server->image,
+				  &name, &handle,
+				  &stride);
+
+	if (!b)
+		error(1, errno, "failed to export image\n");
+
+	fprintf(stderr,"image exported %d %d %d\n", name, handle, stride);
+
+	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, 0, &fd);
+	if (r < 0)
+		error(1, errno, "cannot get prime-fd for handle");
+
+}
+
+static void server_fini_texture(struct server *server)
+{
+
+	eglDestroyImageKHR(server->d->rnode.egl_display, server->image);
+}
+
+struct server *server_create(int sock_fd)
+{
+	struct server *server;
+
+	server = calloc(1, sizeof(struct server));
+	if (!server)
+		error(1, errno, "cannot allocate memory");
+	server->d = display_create();
+	server->w = window_create(server->d);
+	server->sock_fd = sock_fd;
+	init_fns();
+
+	server_init_texture(server);
+
+	return server;
+}
+
+
+void server_destroy(struct server *server)
+{
+	server_fini_texture(server);
+	window_destroy(server->w);
+	display_destroy(server->d);
+	close(server->sock_fd);
+	free(server);
 }

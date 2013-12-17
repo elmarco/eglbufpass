@@ -35,6 +35,7 @@ struct display {
 struct client {
 	struct display *d;
 	struct window *w;
+	int sock_fd;
 };
 
 static void x11_window_create(struct window *w)
@@ -177,7 +178,7 @@ static void display_destroy(struct display *d)
 	free(d);
 }
 
-struct client *client_create(void)
+struct client *client_create(int sock_fd)
 {
 	struct client *client;
 	client = calloc(1, sizeof(struct client));
@@ -186,6 +187,7 @@ struct client *client_create(void)
 
 	client->d = display_create();
 	client->w = window_create(client->d);
+	client->sock_fd = sock_fd;
 	return client;
 }
 
@@ -193,7 +195,7 @@ void client_destroy(struct client *client)
 {
 	window_destroy(client->w);
 	display_destroy(client->d);
-
+	close(client->sock_fd);
 	free(client);
 
 }

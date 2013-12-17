@@ -3,11 +3,11 @@
 
 struct server;
 
-struct server *server_create(void);
+struct server *server_create(int sock_fd);
 void server_destroy(struct server *server);
 
 struct client;
-struct client *client_create(void);
+struct client *client_create(int sock_fd);
 void client_destroy(struct client *client);
 
 #endif

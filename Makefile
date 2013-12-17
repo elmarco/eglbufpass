@@ -1,13 +1,15 @@
-CFLAGS=-g -Wall
-LIBS=-lEGL -lGL -lgbm -lGLEW
+CFLAGS=-g -Wall `pkg-config --cflags libdrm`
+LIBS=-lEGL -lGL -lgbm -lGLEW -ldrm -lX11
 
-all: server_egl
+OBJ = server_egl.o main.o client.o
 
+all: egl_pass
 
-server_egl.o: server_egl.c
+%.o: %.c
+	$(CC) -c -o $@ $< $(CFLAGS)
 
-server_egl: server_egl.o
-	$(CC) $(CFLAGS) -o server_egl server_egl.o $(LIBS)
+egl_pass: $(OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 clean:
-	rm -f server_egl server_egl.o
+	rm -f egl_pass $(OBJ)
