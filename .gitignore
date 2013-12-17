@@ -44,3 +44,4 @@ manifest.txt
 .libs/
 Makefile
 Makefile.in
+egl_pass
