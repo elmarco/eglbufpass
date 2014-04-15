@@ -1,4 +1,3 @@
-
 /* requires
    EGL_KHR_surfaceless_context
 */
@@ -129,7 +128,7 @@ static void rnode_init(struct display *d)
 		eglQueryString(d->rnode.egl_display, EGL_VENDOR));
 	fprintf(stderr, "EGL extensions: %s\n",
 		eglQueryString(d->rnode.egl_display, EGL_EXTENSIONS));
-		
+
 	api = EGL_OPENGL_API;
 	b = eglBindAPI(api);
 	if (!b)
@@ -204,7 +203,7 @@ static int server_init_texture(struct server *server)
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, server->fb_id);
 	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, server->tex_id, 0);
 
-	glClearColor(1.0, 0.0, 0.0, 0.0);
+	glClearColor(1.0, 0.0, 1.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	glFinish();
@@ -213,19 +212,25 @@ static int server_init_texture(struct server *server)
 
 	fprintf(stderr,"got image %p\n", server->image);
 
+        b = eglExportDMABUFImageMESA(server->d->rnode.egl_display,
+                                     server->image,
+                                     &fd,
+                                     &server->stride);
+
+#if 0
 	b = eglExportDRMImageMESA(server->d->rnode.egl_display,
 				  server->image,
 				  &name, &handle,
 				  &server->stride);
-
+	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, DRM_CLOEXEC, &fd);
+	if (r < 0)
+            error(1, errno, "cannot get prime-fd for handle");
+#endif
 	if (!b)
 		error(1, errno, "failed to export image\n");
 
-	fprintf(stderr,"image exported %d %d %d\n", name, handle, server->stride);
+	fprintf(stderr,"image exported %d %d\n", fd, server->stride);
 
-	r = drmPrimeHandleToFD(server->d->rnode.fd, handle, DRM_CLOEXEC, &fd);
-	if (r < 0)
-		error(1, errno, "cannot get prime-fd for handle");
 	return fd;
 }
 
@@ -245,14 +250,14 @@ struct server *server_create(int sock_fd)
 	server->d = display_create();
 	server->sock_fd = sock_fd;
 	init_fns();
-	
+
 	fd = server_init_texture(server);
 
 	{
 		ssize_t size;
 		int i;
 		struct cmd_buf buf;
-		
+
 		buf.type = CMD_TYPE_BUF;
 
 		buf.u.buf.id = server->tex_id;

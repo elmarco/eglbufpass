@@ -39,9 +39,13 @@ const char *fragment_src =
           						       \
    void  main()						       \
    {							       \
-      gl_FragColor  = texture2D(samp, tcoords);		       \
+gl_FragColor  = texture2D(samp, tcoords);		       \
    }							       \
 ";
+
+#if 0
+gl_FragColor  = texture2D(samp, tcoords);
+#endif
 
 struct x11_window {
 	Window win;
@@ -91,6 +95,8 @@ static void x11_window_create(struct window *w)
 	root = DefaultRootWindow(d->x11.dpy);
 
 	memset(&swa, 0, sizeof(XSetWindowAttributes));
+//swa.event_mask  =  ExposureMask | PointerMotionMask | KeyPressMask;
+
 	w->x11.win = XCreateWindow(d->x11.dpy, root, 0, 0,
 				   w->width, w->height, 0,
 				   CopyFromParent, InputOutput,
@@ -99,7 +105,7 @@ static void x11_window_create(struct window *w)
 
 	XMapWindow(d->x11.dpy, w->x11.win);
 
-	
+
 	w->x11.egl_surface = eglCreateWindowSurface( d->x11.egl_display,
 						     d->x11.egl_conf,
 						     (EGLNativeWindowType)w->x11.win, NULL);
@@ -117,7 +123,7 @@ static void x11_window_create(struct window *w)
 
 static void init_fns(void)
 {
-	
+
 }
 
 static struct window *window_create(struct display *d)
@@ -205,7 +211,7 @@ static void x11_display_init(struct display *d)
 					  ctx_att);
 	if (!d->x11.egl_ctx)
 		error(1, errno, "cannot create EGL context");
-	
+
 	eglMakeCurrent(d->x11.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
 }
@@ -260,7 +266,7 @@ draw_rect_from_arrays(struct client *c, const void *verts, const void *tex)
 				      (void *)(sizeof(GLfloat) * 4 * 4));
 		glEnableVertexAttribArray(c->attr_tex);
 	}
-			
+
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	if (verts)
 		glDisableVertexAttribArray(c->attr_pos);
@@ -361,9 +367,9 @@ void add_texture(struct client *client, struct cmd_buf *cbuf, int fd)
 	texture = calloc(1, sizeof(*texture));
 	if (!texture)
 		error(1, errno, "failed to create texture storage\n");
-	
+
 	texture->rem_id = cbuf->u.buf.id;
-			
+
 	attrs[0] = EGL_DMA_BUF_PLANE0_FD_EXT;
 	attrs[1] = fd;
 	attrs[2] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
@@ -393,7 +399,7 @@ void add_texture(struct client *client, struct cmd_buf *cbuf, int fd)
 
 //	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 640, 480, 0,
 //		     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)texture->image);
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)texture->image);
 
 	if (!client->texhead)
 		client->texhead = texture;
@@ -422,13 +428,14 @@ struct client *client_create(int sock_fd)
 	glViewport(0, 0, client->w->width, client->w->height);
 	glClearColor(0.0, 1.0, 0.0, 0.0);
 	glClear(GL_COLOR_BUFFER_BIT);
-	
+
 	eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
 
 	glUniform1i(client->tex_loc, 0);
 	sleep(1);
 	for (;;) {
-
+/* glClear(GL_COLOR_BUFFER_BIT); */
+/* eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface); */
 		struct cmd_buf buf;
 		int myfd;
 		size = sock_fd_read(client->sock_fd, &buf, sizeof(buf), &myfd);
@@ -442,7 +449,6 @@ struct client *client_create(int sock_fd)
 
 			eglSwapBuffers(client->d->x11.egl_display, client->w->x11.egl_surface);
 		}
-
 
 	}
 	return client;
